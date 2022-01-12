@@ -1,0 +1,6 @@
+{
+  "host": "127.0.0.1",
+  "port": "8888",
+  "database": "root:123456@tcp(127.0.0.1:3306)/ipapk?charset=utf8&parseTime=true&loc=Local",
+  "proxy": "http://127.0.0.1:8888"
+}
