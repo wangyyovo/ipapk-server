@@ -38,6 +38,8 @@ type Dialector struct {
 var (
 	// CreateClauses create clauses
 	CreateClauses = []string{"INSERT", "VALUES", "ON CONFLICT"}
+	// QueryClauses query clauses
+	QueryClauses = []string{}
 	// UpdateClauses update clauses
 	UpdateClauses = []string{"UPDATE", "SET", "WHERE", "ORDER BY", "LIMIT"}
 	// DeleteClauses delete clauses
@@ -62,7 +64,7 @@ func (dialector Dialector) Name() string {
 func (dialector Dialector) NowFunc(n int) func() time.Time {
 	return func() time.Time {
 		round := time.Second / time.Duration(math.Pow10(n))
-		return time.Now().Local().Round(round)
+		return time.Now().Round(round)
 	}
 }
 
@@ -86,6 +88,7 @@ func (dialector Dialector) Initialize(db *gorm.DB) (err error) {
 	// register callbacks
 	callbacks.RegisterDefaultCallbacks(db, &callbacks.Config{
 		CreateClauses: CreateClauses,
+		QueryClauses:  QueryClauses,
 		UpdateClauses: UpdateClauses,
 		DeleteClauses: DeleteClauses,
 	})
@@ -253,7 +256,7 @@ func (dialector Dialector) QuoteTo(writer clause.Writer, str string) {
 				shiftDelimiter = 0
 				underQuoted = false
 				continuousBacktick = 0
-				writer.WriteString("`")
+				writer.WriteByte('`')
 			}
 			writer.WriteByte(v)
 			continue
@@ -278,7 +281,7 @@ func (dialector Dialector) QuoteTo(writer clause.Writer, str string) {
 	if continuousBacktick > 0 && !selfQuoted {
 		writer.WriteString("``")
 	}
-	writer.WriteString("`")
+	writer.WriteByte('`')
 }
 
 func (dialector Dialector) Explain(sql string, vars ...interface{}) string {
