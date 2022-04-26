@@ -11,7 +11,7 @@ require (
 	github.com/shogo82148/androidbinary v1.0.2
 	github.com/zpatrick/go-bytesize v0.0.0-20170214182126-40b68ac70b6a
 	gorm.io/driver/mysql v1.2.3
-	gorm.io/gorm v1.22.5
+	gorm.io/gorm v1.23.5
 )
 
 require (
