@@ -5,30 +5,36 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/callbacks"
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
 	"gorm.io/gorm/migrator"
 	"gorm.io/gorm/schema"
+	"gorm.io/gorm/utils"
 )
 
 type Config struct {
-	DriverName                string
-	ServerVersion             string
-	DSN                       string
-	Conn                      gorm.ConnPool
-	SkipInitializeWithVersion bool
-	DefaultStringSize         uint
-	DefaultDatetimePrecision  *int
-	DisableDatetimePrecision  bool
-	DontSupportRenameIndex    bool
-	DontSupportRenameColumn   bool
-	DontSupportForShareClause bool
+	DriverName                    string
+	ServerVersion                 string
+	DSN                           string
+	DSNConfig                     *mysql.Config
+	Conn                          gorm.ConnPool
+	SkipInitializeWithVersion     bool
+	DefaultStringSize             uint
+	DefaultDatetimePrecision      *int
+	DisableWithReturning          bool
+	DisableDatetimePrecision      bool
+	DontSupportRenameIndex        bool
+	DontSupportRenameColumn       bool
+	DontSupportForShareClause     bool
+	DontSupportNullAsDefaultValue bool
 }
 
 type Dialector struct {
@@ -38,6 +44,8 @@ type Dialector struct {
 var (
 	// CreateClauses create clauses
 	CreateClauses = []string{"INSERT", "VALUES", "ON CONFLICT"}
+	// QueryClauses query clauses
+	QueryClauses = []string{}
 	// UpdateClauses update clauses
 	UpdateClauses = []string{"UPDATE", "SET", "WHERE", "ORDER BY", "LIMIT"}
 	// DeleteClauses delete clauses
@@ -47,7 +55,8 @@ var (
 )
 
 func Open(dsn string) gorm.Dialector {
-	return &Dialector{Config: &Config{DSN: dsn}}
+	dsnConf, _ := mysql.ParseDSN(dsn)
+	return &Dialector{Config: &Config{DSN: dsn, DSNConfig: dsnConf}}
 }
 
 func New(config Config) gorm.Dialector {
@@ -62,7 +71,7 @@ func (dialector Dialector) Name() string {
 func (dialector Dialector) NowFunc(n int) func() time.Time {
 	return func() time.Time {
 		round := time.Second / time.Duration(math.Pow10(n))
-		return time.Now().Local().Round(round)
+		return time.Now().Round(round)
 	}
 }
 
@@ -83,13 +92,6 @@ func (dialector Dialector) Apply(config *gorm.Config) error {
 func (dialector Dialector) Initialize(db *gorm.DB) (err error) {
 	ctx := context.Background()
 
-	// register callbacks
-	callbacks.RegisterDefaultCallbacks(db, &callbacks.Config{
-		CreateClauses: CreateClauses,
-		UpdateClauses: UpdateClauses,
-		DeleteClauses: DeleteClauses,
-	})
-
 	if dialector.DriverName == "" {
 		dialector.DriverName = "mysql"
 	}
@@ -107,6 +109,7 @@ func (dialector Dialector) Initialize(db *gorm.DB) (err error) {
 		}
 	}
 
+	withReturning := false
 	if !dialector.Config.SkipInitializeWithVersion {
 		err = db.ConnPool.QueryRowContext(ctx, "SELECT VERSION()").Scan(&dialector.ServerVersion)
 		if err != nil {
@@ -117,6 +120,10 @@ func (dialector Dialector) Initialize(db *gorm.DB) (err error) {
 			dialector.Config.DontSupportRenameIndex = true
 			dialector.Config.DontSupportRenameColumn = true
 			dialector.Config.DontSupportForShareClause = true
+			dialector.Config.DontSupportNullAsDefaultValue = true
+			if checkVersion(dialector.ServerVersion, "10.5") {
+				withReturning = true
+			}
 		} else if strings.HasPrefix(dialector.ServerVersion, "5.6.") {
 			dialector.Config.DontSupportRenameIndex = true
 			dialector.Config.DontSupportRenameColumn = true
@@ -131,6 +138,32 @@ func (dialector Dialector) Initialize(db *gorm.DB) (err error) {
 			dialector.Config.DontSupportForShareClause = true
 		}
 	}
+
+	// register callbacks
+	callbackConfig := &callbacks.Config{
+		CreateClauses: CreateClauses,
+		QueryClauses:  QueryClauses,
+		UpdateClauses: UpdateClauses,
+		DeleteClauses: DeleteClauses,
+	}
+
+	if !dialector.Config.DisableWithReturning && withReturning {
+		callbackConfig.LastInsertIDReversed = true
+
+		if !utils.Contains(callbackConfig.CreateClauses, "RETURNING") {
+			callbackConfig.CreateClauses = append(callbackConfig.CreateClauses, "RETURNING")
+		}
+
+		if !utils.Contains(callbackConfig.UpdateClauses, "RETURNING") {
+			callbackConfig.UpdateClauses = append(callbackConfig.UpdateClauses, "RETURNING")
+		}
+
+		if !utils.Contains(callbackConfig.DeleteClauses, "RETURNING") {
+			callbackConfig.DeleteClauses = append(callbackConfig.DeleteClauses, "RETURNING")
+		}
+	}
+
+	callbacks.RegisterDefaultCallbacks(db, callbackConfig)
 
 	for k, v := range dialector.ClauseBuilders() {
 		db.ClauseBuilders[k] = v
@@ -171,6 +204,8 @@ func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 					if column.Name != "" {
 						onConflict.DoUpdates = []clause.Assignment{{Column: column, Value: column}}
 					}
+
+					builder.(*gorm.Statement).AddClause(onConflict)
 				}
 			}
 
@@ -253,7 +288,7 @@ func (dialector Dialector) QuoteTo(writer clause.Writer, str string) {
 				shiftDelimiter = 0
 				underQuoted = false
 				continuousBacktick = 0
-				writer.WriteString("`")
+				writer.WriteByte('`')
 			}
 			writer.WriteByte(v)
 			continue
@@ -278,10 +313,26 @@ func (dialector Dialector) QuoteTo(writer clause.Writer, str string) {
 	if continuousBacktick > 0 && !selfQuoted {
 		writer.WriteString("``")
 	}
-	writer.WriteString("`")
+	writer.WriteByte('`')
+}
+
+type localTimeInterface interface {
+	In(loc *time.Location) time.Time
 }
 
 func (dialector Dialector) Explain(sql string, vars ...interface{}) string {
+	if dialector.DSNConfig != nil && dialector.DSNConfig.Loc == time.Local {
+		for i, v := range vars {
+			if p, ok := v.(localTimeInterface); ok {
+				func(i int, t localTimeInterface) {
+					defer func() {
+						recover()
+					}()
+					vars[i] = t.In(time.Local)
+				}(i, p)
+			}
+		}
+	}
 	return logger.ExplainSQL(sql, nil, `'`, vars...)
 }
 
@@ -299,9 +350,9 @@ func (dialector Dialector) DataTypeOf(field *schema.Field) string {
 		return dialector.getSchemaTimeType(field)
 	case schema.Bytes:
 		return dialector.getSchemaBytesType(field)
+	default:
+		return dialector.getSchemaCustomType(field)
 	}
-
-	return string(field.DataType)
 }
 
 func (dialector Dialector) getSchemaFloatType(field *schema.Field) string {
@@ -393,10 +444,46 @@ func (dialector Dialector) getSchemaIntAndUnitType(field *schema.Field) string {
 	return sqlType
 }
 
+func (dialector Dialector) getSchemaCustomType(field *schema.Field) string {
+	sqlType := string(field.DataType)
+
+	if field.AutoIncrement && !strings.Contains(strings.ToLower(sqlType), " auto_increment") {
+		sqlType += " AUTO_INCREMENT"
+	}
+
+	return sqlType
+}
+
 func (dialector Dialector) SavePoint(tx *gorm.DB, name string) error {
 	return tx.Exec("SAVEPOINT " + name).Error
 }
 
 func (dialector Dialector) RollbackTo(tx *gorm.DB, name string) error {
 	return tx.Exec("ROLLBACK TO SAVEPOINT " + name).Error
+}
+
+var versionTrimerRegexp = regexp.MustCompile(`^(\d+).*$`)
+
+// checkVersion newer or equal returns true, old returns false
+func checkVersion(newVersion, oldVersion string) bool {
+	if newVersion == oldVersion {
+		return true
+	}
+
+	newVersions := strings.Split(newVersion, ".")
+	oldVersions := strings.Split(oldVersion, ".")
+	for idx, nv := range newVersions {
+		if len(oldVersions) <= idx {
+			return true
+		}
+
+		nvi, _ := strconv.Atoi(versionTrimerRegexp.ReplaceAllString(nv, "$1"))
+		ovi, _ := strconv.Atoi(versionTrimerRegexp.ReplaceAllString(oldVersions[idx], "$1"))
+		if nvi == ovi {
+			continue
+		}
+		return nvi > ovi
+	}
+
+	return false
 }
