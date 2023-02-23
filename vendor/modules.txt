@@ -56,7 +56,7 @@ github.com/modern-go/concurrent
 # github.com/modern-go/reflect2 v0.0.0-20180701023420-4b7aa43c6742
 ## explicit
 github.com/modern-go/reflect2
-# github.com/satori/go.uuid v1.1.1-0.20170321230731-5bf94b69c6b6
+# github.com/satori/go.uuid v1.2.0
 ## explicit
 github.com/satori/go.uuid
 # github.com/shogo82148/androidbinary v1.0.2

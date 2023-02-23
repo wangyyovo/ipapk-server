@@ -7,7 +7,7 @@ require (
 	github.com/andrianbdn/iospng v0.0.0-20180730113000-dccef1992541
 	github.com/boombuler/barcode v1.0.1
 	github.com/gin-gonic/gin v1.7.7
-	github.com/satori/go.uuid v1.1.1-0.20170321230731-5bf94b69c6b6
+	github.com/satori/go.uuid v1.2.0
 	github.com/shogo82148/androidbinary v1.0.2
 	github.com/zpatrick/go-bytesize v0.0.0-20170214182126-40b68ac70b6a
 	gorm.io/driver/mysql v1.2.3
